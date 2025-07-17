@@ -1,0 +1,143 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+*.log
+*.sqlite3
+*.db
+*.bak
+*.tmp
+*.swp
+*.swo
+*.~
+
+# Jupyter Notebooks
+.ipynb_checkpoints/
+*.ipynb
+
+# VS Code
+.vscode/
+*.code-workspace
+
+# Environment/venv
+.env
+.env.*
+.venv/
+venv/
+pod/
+
+# Ollama
+ollama/
+ollama_models/
+
+# Data/outputs
+*.wav
+*.mp3
+*.flac
+*.m4a
+*.ogg
+*.webm
+*.opus
+*.aac
+*.wma
+*.aiff
+*.au
+*.raw
+*.zip
+*.tar.gz
+*.tar
+*.7z
+*.gz
+*.bz2
+*.xz
+*.npz
+*.npy
+*.csv
+*.tsv
+*.json
+*.parquet
+*.pkl
+*.h5
+*.pt
+*.ckpt
+*.onnx
+*.pb
+*.model
+*.weights
+*.bin
+*.cache
+*.tmp
+*.out
+*.pdf
+*.docx
+*.pptx
+*.xlsx
+*.xls
+*.ppt
+*.doc
+*.rtf
+*.txt
+*.log
+*.html
+*.xml
+*.yaml
+*.yml
+
+# Session/analysis outputs
+session_*
+*.json
+*.srt
+*.vtt
+*.report
+*.summary
+*.highlight
+
+# System
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Misc
+*.orig
+*.rej
+*.bak
+*.old
+*.save
+*.backup
+
+# Streamlit
+.streamlit/
+
+# ChromaDB
+chroma_db/
+
+# Test/coverage
+.coverage
+htmlcov/
+.tox/
+.nox/
+.pytest_cache/
+
+# RAG system
+rag-system/
+
+# Model files
+models/
+
+# Ignore examples and notebooks
+examples/
+notebooks/
+
+# Ignore user-specific files
+*.local
+*.user
+*.session
+
+# Ignore pip
+pip-selfcheck.json
