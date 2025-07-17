@@ -368,8 +368,20 @@ class PipelineRunner:
         if resume and step_name in self.state.get('steps_completed', []):
             cache_path = self.session_dir / f"{step_name}.json"
             if cache_path.exists():
-                logger.info(f"Resuming from cached step: {step_name}")
-                return self.file_utils.load_json(str(cache_path))
+                cached_result = self.file_utils.load_json(str(cache_path))
+                # Check for empty or incomplete cached result
+                is_empty = False
+                if isinstance(cached_result, list) and len(cached_result) == 0:
+                    is_empty = True
+                elif isinstance(cached_result, dict):
+                    # For transcript, check 'segments' key
+                    if 'segments' in cached_result and (not cached_result['segments']):
+                        is_empty = True
+                if not is_empty:
+                    logger.info(f"Resuming from cached step: {step_name}")
+                    return cached_result
+                else:
+                    logger.info(f"Cached step {step_name} is empty, rerunning...")
         
         logger.info(f"Executing step: {step_name}")
         step_start = time.time()

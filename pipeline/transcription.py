@@ -123,23 +123,30 @@ class Transcription:
                 logger.info(f"Audio is {duration:.2f}s, splitting into chunks of {max_chunk_duration}s")
                 segments = self._transcribe_chunked(audio_data, sample_rate, max_chunk_duration)
             else:
-                if self.backend == "faster-whisper":
-                    segments = self._transcribe_faster_whisper(audio_data, sample_rate)
-                else:
-                    segments = self._transcribe_openai_whisper(audio_data, sample_rate)
+                try:
+                    if self.backend == "faster-whisper":
+                        raw_segments = self._transcribe_faster_whisper(audio_data, sample_rate)
+                    else:
+                        raw_segments = self._transcribe_openai_whisper(audio_data, sample_rate)
+                    # Post-process raw segments for non-chunked case
+                    segments = self._post_process_segments(raw_segments)
+                except Exception as e:
+                    logger.error(f"Single transcription failed: {e}")
+                    segments = []
             
-            # Post-process segments
-            processed_segments = self._post_process_segments(segments)
+            # Ensure segments is always a list
+            if segments is None:
+                segments = []
             
             transcription_time = time.time() - start_time
             rtf = transcription_time / duration  # Real-time factor
             
             logger.info(f"Transcription completed | "
-                       f"Segments: {len(processed_segments)} | "
+                       f"Segments: {len(segments)} | "
                        f"Time: {transcription_time:.2f}s | "
                        f"RTF: {rtf:.2f}x")
             
-            return processed_segments
+            return segments
             
         except Exception as e:
             logger.error(f"Transcription failed: {e}")
@@ -157,20 +164,29 @@ class Transcription:
             chunk_end = min(i + chunk_samples, len(audio_data))
             chunk_audio = audio_data[chunk_start:chunk_end]
             if len(chunk_audio) < sample_rate:
-                break
+                continue  # skip too-short chunks, but do not break
             logger.info(f"Processing chunk {i//chunk_samples + 1}: {chunk_start/sample_rate:.1f}s - {chunk_end/sample_rate:.1f}s")
-            if self.backend == "faster-whisper":
-                chunk_segments = self._transcribe_faster_whisper(chunk_audio, sample_rate)
-            else:
-                chunk_segments = self._transcribe_openai_whisper(chunk_audio, sample_rate)
-            # Convert raw segments to post-processed format
-            processed_chunk_segments = self._post_process_segments(chunk_segments)
-            # Adjust timestamps to absolute time
+            try:
+                if self.backend == "faster-whisper":
+                    chunk_segments = self._transcribe_faster_whisper(chunk_audio, sample_rate)
+                else:
+                    chunk_segments = self._transcribe_openai_whisper(chunk_audio, sample_rate)
+            except Exception as e:
+                logger.error(f"Chunk {i//chunk_samples + 1} transcription failed: {e}")
+                chunk_segments = []
+            # Always try to post-process whatever was returned
+            processed_chunk_segments = []
+            if chunk_segments:
+                try:
+                    processed_chunk_segments = self._post_process_segments(chunk_segments)
+                except Exception as e:
+                    logger.error(f"Chunk {i//chunk_samples + 1} post-processing failed: {e}")
             for segment in processed_chunk_segments:
                 segment['start_time'] += audio_offset
                 segment['end_time'] += audio_offset
                 all_segments.append(segment)
             audio_offset += (chunk_samples - overlap_samples) / sample_rate
+        # If all chunks fail, return empty list, else return all valid segments
         return all_segments
     
     def _transcribe_faster_whisper(self, audio_data: np.ndarray, sample_rate: int) -> List[Dict]:
@@ -242,32 +258,66 @@ class Transcription:
             Path(temp_path).unlink(missing_ok=True)
     
     def _post_process_segments(self, segments: List[Dict]) -> List[Dict]:
-        """Post-process transcript segments"""
+        """Post-process transcript segments - preserve all segments with text data"""
         processed_segments = []
         
         for i, segment in enumerate(segments):
-            # Clean up text
-            text = segment['text'].strip()
+            # Extract text first - this is the most important data
+            text = ""
+            if 'text' in segment:
+                text = segment['text'].strip()
+            elif isinstance(segment, dict):
+                # Try to find text in any format
+                for key in segment.keys():
+                    if 'text' in key.lower() and isinstance(segment[key], str):
+                        text = segment[key].strip()
+                        break
             
-            # Skip very short or empty segments
-            if len(text) < 3:
+            # Only skip if text is truly empty or missing
+            if not text:
                 continue
             
-            # Skip segments with very high no-speech probability
-            if segment.get('no_speech_prob', 0.0) > 0.8:
+            # Handle timing keys flexibly
+            start_time = 0.0
+            end_time = 0.0
+            
+            # Try to extract start time
+            if 'start_time' in segment:
+                start_time = float(segment['start_time'])
+            elif 'start' in segment:
+                start_time = float(segment['start'])
+            
+            # Try to extract end time
+            if 'end_time' in segment:
+                end_time = float(segment['end_time'])
+            elif 'end' in segment:
+                end_time = float(segment['end'])
+            
+            # Calculate duration
+            duration = max(0.0, end_time - start_time)
+            
+            # For already processed segments with all required keys, return as-is
+            if all(k in segment for k in ['start_time', 'end_time', 'text', 'segment_id']):
+                segment['text'] = text  # Clean up text
+                processed_segments.append(segment)
                 continue
             
-            # Add segment ID
+            # Create processed segment with all available data
             processed_segment = {
-                'segment_id': i + 1,
-                'start_time': round(segment['start'], 2),
-                'end_time': round(segment['end'], 2),
-                'duration': round(segment['end'] - segment['start'], 2),
+                'segment_id': segment.get('segment_id', i + 1),
+                'start_time': round(start_time, 2),
+                'end_time': round(end_time, 2),
+                'duration': round(duration, 2),
                 'text': text,
-                'confidence': 1.0 - segment.get('no_speech_prob', 0.0),
+                'confidence': segment.get('confidence', 1.0 - segment.get('no_speech_prob', 0.0)),
                 'avg_logprob': segment.get('avg_logprob', 0.0),
-                'compression_ratio': segment.get('compression_ratio', 0.0)
+                'compression_ratio': segment.get('compression_ratio', 1.0)
             }
+            
+            # Preserve any additional data from the original segment
+            for key, value in segment.items():
+                if key not in processed_segment and key not in ['start', 'end']:
+                    processed_segment[key] = value
             
             processed_segments.append(processed_segment)
         
@@ -330,8 +380,7 @@ class Transcription:
     
     def save_transcript(self, segments: List[Dict], output_path: str) -> None:
         """
-        Save transcript to JSON file
-        
+        Save transcript to JSON file (always, even if empty)
         Args:
             segments: Transcript segments
             output_path: Path to save the transcript
@@ -342,13 +391,12 @@ class Transcription:
                 'backend': self.backend,
                 'device': self.device,
                 'total_segments': len(segments),
-                'total_duration': max([s['end_time'] for s in segments]) if segments else 0
+                'total_duration': max([s.get('end_time', 0) for s in segments]) if segments else 0
             },
-            'segments': segments
+            'segments': segments if segments is not None else []
         }
-        
         self.file_utils.save_json(transcript_data, output_path)
-        logger.info(f"Saved transcript to: {output_path}")
+        logger.info(f"Saved transcript to: {output_path} (segments: {len(transcript_data['segments'])})")
     
     def get_full_text(self, segments: List[Dict]) -> str:
         """
