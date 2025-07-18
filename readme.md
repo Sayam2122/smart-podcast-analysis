@@ -1,13 +1,166 @@
-# Podcast Audio Analysis Pipeline with RAG System
+# 🎙️ Smart Audio RAG (Retrieval-Augmented Generation) System
 
-A complete, modular, memory-efficient, and real-time podcast/audio analysis pipeline with advanced speaker diarization, emotion detection, transcription, and topic modeling. Integrated with a fully searchable and interactive RAG system using open-source tools only.
+An intelligent system that processes podcast transcripts and audio analysis data to create a powerful query-response interface with conversation memory, multi-modal search, and advanced feedback collection.
 
-## 🚀 Features
+## ✨ Features
 
-- **Audio Processing Pipeline**:
-  - Multi-format audio ingestion (.mp3, .m4a, .flac, .wav)
-  - High-quality transcription using Whisper/Faster-Whisper
-  - Advanced speaker diarization with Pyannote-Audio
+### 🔍 Multi-Modal Search Capabilities
+- **Content Search**: Natural language queries across transcript content
+- **Speaker-Specific Queries**: "What did Speaker_01 say about technology?"
+- **Emotional Analysis**: "When was the conversation most excited?"
+- **Temporal Queries**: "What happened around 5 minutes in?"
+- **Analytical Queries**: "Summarize the main themes discussed"
+
+### 🧠 Intelligent Query Processing
+- **Intent Recognition**: Automatically understands query types and intentions
+- **Entity Extraction**: Identifies speakers, emotions, topics, and time references
+- **Context-Aware Responses**: Maintains conversation context for follow-up questions
+- **Multi-Dimensional Ranking**: Advanced relevance scoring with multiple factors
+
+### 💾 Conversation Memory
+- **Persistent Storage**: SQLite-based conversation history and user preferences
+- **Context Management**: Maintains conversation state and recent query context
+- **User Learning**: Adapts to user preferences and query patterns
+- **Session Management**: Supports multiple concurrent users and conversations
+
+### 📊 Advanced Feedback System
+- **Variable Timing**: Immediate, delayed, and session-end feedback collection
+- **Pattern Learning**: Analyzes feedback to improve system performance
+- **Adaptive Prompting**: Adjusts feedback frequency based on user satisfaction
+- **Multiple Feedback Types**: Satisfaction, relevance, completeness, accuracy
+
+### 🗄️ Hierarchical Vector Database
+- **Multi-Collection Architecture**: Separate collections for episodes, blocks, segments, speakers, emotions
+- **ChromaDB Backend**: Persistent vector storage with metadata filtering
+- **Embedding Strategy**: SentenceTransformers for local, fast embeddings
+- **Performance Optimization**: Efficient similarity search with caching
+
+## 🚀 Quick Start
+
+### Prerequisites
+- Python 3.8+
+- Git
+
+### Installation
+
+1. **Clone the repository**:
+   ```bash
+   git clone <repository-url>
+   cd podsmtih8
+   ```
+
+2. **Install dependencies**:
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+3. **Prepare your data**:
+   - Place your podcast session data in `output/sessions/`
+   - Each session should have `final_report.json` and `summarization.json`
+   - Example structure:
+     ```
+     output/sessions/
+     ├── session_001/
+     │   ├── final_report.json
+     │   └── summarization.json
+     └── session_002/
+         ├── final_report.json
+         └── summarization.json
+     ```
+
+### Running the System
+
+#### Interactive Mode (Recommended)
+```bash
+python main.py interactive
+```
+
+#### Single Query Mode
+```bash
+python main.py query "What are the main topics discussed?"
+```
+
+#### With Custom Parameters
+```bash
+python main.py interactive --data-dir custom_data --session-dir my_sessions --user-id user123
+```
+
+## 🎯 Usage Examples
+
+### Basic Queries
+```
+# Content search
+"What topics were discussed in the podcast?"
+
+# Speaker-specific
+"What did Speaker_01 say about artificial intelligence?"
+
+# Emotional context
+"Show me moments when speakers were excited or enthusiastic"
+
+# Time-based
+"What happened in the first 10 minutes?"
+"Tell me about the conversation around 15:30"
+
+# Analytical
+"Summarize the key themes and insights"
+"Compare what different speakers said about technology"
+```
+
+### CLI Commands
+```
+/help          - Show available commands
+/stats         - Display system statistics
+/sessions      - List loaded sessions
+/config        - Show current configuration
+/feedback      - View feedback analytics
+/conversation  - Show conversation history
+/debug         - Toggle debug mode
+/quit          - Exit the system
+```
+
+## 🏗️ Architecture
+
+### Core Components
+
+#### 1. Vector Database (`SmartVectorDB`)
+- **ChromaDB Integration**: Persistent vector storage
+- **Multi-Collection Design**: 
+  - Episodes: Full episode metadata and summaries
+  - Blocks: Thematic content blocks
+  - Segments: Individual conversation segments
+  - Speakers: Speaker-specific content and statistics
+  - Emotions: Emotional content and analysis
+- **Embedding Strategy**: SentenceTransformers (all-MiniLM-L6-v2)
+- **Metadata Filtering**: Advanced filtering by time, speaker, emotion, confidence
+
+#### 2. Query Processor (`SmartQueryProcessor`)
+- **Intent Classification**: Automatic query type detection
+- **Entity Extraction**: NLP-based entity identification
+- **Context Integration**: Conversation memory integration
+- **Result Ranking**: Multi-factor relevance scoring
+- **Response Generation**: Context-aware response formatting
+
+#### 3. Conversation Memory (`ConversationMemory`)
+- **SQLite Storage**: Persistent conversation and user data
+- **Context Management**: Recent query tracking and topic continuity
+- **User Preferences**: Learned patterns and personalization
+- **Session Support**: Multi-user conversation management
+
+#### 4. Feedback System (`FeedbackSystem`)
+- **Adaptive Collection**: Variable timing based on user behavior
+- **Pattern Analysis**: Machine learning from user feedback
+- **Multiple Types**: Satisfaction, relevance, completeness, accuracy
+- **Fatigue Prevention**: Smart frequency adjustment
+
+### Data Flow
+```
+User Query → Intent Analysis → Entity Extraction → Context Integration 
+           ↓
+Vector Search → Result Ranking → Response Generation → Feedback Collection
+           ↓
+Conversation Memory Update → User Preference Learning
+```
   - Dual-mode emotion detection (text + audio)
   - Semantic segmentation and topic modeling
   - Local LLM summarization via Ollama
