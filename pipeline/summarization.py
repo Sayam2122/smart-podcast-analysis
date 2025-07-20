@@ -133,7 +133,7 @@ class PodcastSummarizer:
     
     def summarize_blocks(self, blocks: List[Dict]) -> List[Dict]:
         """
-        Summarize all semantic blocks
+        Summarize all semantic blocks with emotion analysis
         
         Args:
             blocks: List of semantic blocks from segmentation
@@ -153,34 +153,131 @@ class PodcastSummarizer:
         for i, block in enumerate(blocks):
             logger.info(f"Summarizing block {i+1}/{len(blocks)}")
             
+            # Analyze emotions in the block segments
+            emotion_analysis = self._analyze_block_emotions(block)
+            
             # Generate summary
             summary = self._summarize_block(block)
             
             # Generate key points
             key_points = self._extract_key_points(block)
             
-            # Generate insights
-            insights = self._generate_insights(block)
+            # Generate insights with emotion context
+            insights = self._extract_insights(block, emotion_analysis)
             
-            # Add summary data to block
+            # Enhance block with all analysis
             enhanced_block = block.copy()
             enhanced_block.update({
                 'summary': summary,
                 'key_points': key_points,
                 'insights': insights,
+                'emotion_analysis': emotion_analysis,
                 'summary_stats': {
                     'original_length': len(block['text']),
                     'summary_length': len(summary) if summary else 0,
-                    'compression_ratio': len(summary) / len(block['text']) if summary and block['text'] else 0
+                    'compression_ratio': len(summary) / len(block['text']) if block['text'] and summary else 0,
+                    'segments_analyzed': len(block.get('segments', [])),
+                    'dominant_emotion': emotion_analysis.get('dominant_emotion', 'neutral'),
+                    'emotion_confidence': emotion_analysis.get('confidence', 0.0)
                 }
             })
             
             summarized_blocks.append(enhanced_block)
         
-        summarization_time = time.time() - start_time
-        logger.info(f"Summarization completed | Time: {summarization_time:.2f}s")
+        processing_time = time.time() - start_time
+        logger.info(f"Summarization completed in {processing_time:.2f}s")
         
         return summarized_blocks
+    
+    def _analyze_block_emotions(self, block: Dict) -> Dict:
+        """Analyze emotions across all segments in a block"""
+        segments = block.get('segments', [])
+        if not segments:
+            return {
+                'dominant_emotion': 'neutral',
+                'confidence': 0.5,
+                'emotion_distribution': {},
+                'segment_count': 0
+            }
+        
+        # Collect all emotions from segments
+        all_emotions = []
+        emotion_scores = {}
+        valid_segments = 0
+        
+        for segment in segments:
+            # Try different emotion data locations
+            emotion_data = None
+            
+            # Check for combined emotion first
+            if 'emotions' in segment and isinstance(segment['emotions'], dict):
+                combined = segment['emotions'].get('combined_emotion', {})
+                if isinstance(combined, dict) and 'emotion' in combined:
+                    emotion_data = combined
+            
+            # Fall back to text emotion
+            if not emotion_data and 'text_emotion' in segment:
+                text_emotion = segment['text_emotion']
+                if isinstance(text_emotion, dict) and 'emotion' in text_emotion:
+                    emotion_data = text_emotion
+            
+            # Fall back to audio emotion
+            if not emotion_data and 'audio_emotion' in segment:
+                audio_emotion = segment['audio_emotion']
+                if isinstance(audio_emotion, dict) and 'emotion' in audio_emotion:
+                    emotion_data = audio_emotion
+            
+            if emotion_data:
+                emotion = emotion_data.get('emotion')
+                if emotion:
+                    all_emotions.append(emotion)
+                    valid_segments += 1
+                    
+                    # Aggregate emotion scores
+                    scores = emotion_data.get('all_scores', {})
+                    for emotion_type, score in scores.items():
+                        if emotion_type not in emotion_scores:
+                            emotion_scores[emotion_type] = []
+                        emotion_scores[emotion_type].append(float(score))
+        
+        if not all_emotions:
+            return {
+                'dominant_emotion': 'neutral',
+                'confidence': 0.5,
+                'emotion_distribution': {},
+                'segment_count': len(segments),
+                'analyzed_segments': 0
+            }
+        
+        # Calculate dominant emotion
+        from collections import Counter
+        emotion_counts = Counter(all_emotions)
+        dominant_emotion = emotion_counts.most_common(1)[0][0]
+        
+        # Calculate average scores for each emotion
+        avg_emotion_scores = {}
+        for emotion_type, scores in emotion_scores.items():
+            avg_emotion_scores[emotion_type] = sum(scores) / len(scores)
+        
+        # Calculate confidence as the average score of the dominant emotion
+        confidence = avg_emotion_scores.get(dominant_emotion, 0.5)
+        
+        # Create distribution
+        total_emotions = len(all_emotions)
+        emotion_distribution = {
+            emotion: count / total_emotions 
+            for emotion, count in emotion_counts.items()
+        }
+        
+        return {
+            'dominant_emotion': dominant_emotion,
+            'confidence': float(confidence),
+            'emotion_distribution': emotion_distribution,
+            'average_scores': avg_emotion_scores,
+            'segment_count': len(segments),
+            'analyzed_segments': valid_segments,
+            'emotion_variety': len(emotion_counts)
+        }
     
     def _summarize_block(self, block: Dict) -> str:
         """Generate summary for a single block"""
@@ -243,34 +340,60 @@ Key Points (return as numbered list):"""
         # Fallback key point extraction
         return self._fallback_key_points(text)
     
-    def _generate_insights(self, block: Dict) -> Dict:
-        """Generate insights about the block"""
-        text = block['text']
+    def _extract_insights(self, block: Dict, emotion_analysis: Dict = None) -> Dict:
+        """Extract insights from a block with emotion context"""
+        if not self.ollama_available:
+            return self._fallback_insights(block)
         
-        system_prompt = """You are an expert content analyst. 
-Analyze the content and provide insights about themes, sentiment, and significance.
-Be concise and specific."""
+        # Include emotion context in the analysis prompt
+        emotion_context = ""
+        if emotion_analysis:
+            dominant_emotion = emotion_analysis.get('dominant_emotion', 'neutral')
+            confidence = emotion_analysis.get('confidence', 0.0)
+            emotion_variety = emotion_analysis.get('emotion_variety', 1)
+            
+            emotion_context = f"""
+Emotional Context:
+- Dominant emotion: {dominant_emotion} (confidence: {confidence:.2f})
+- Emotional variety: {emotion_variety} different emotions detected
+- Emotion distribution: {emotion_analysis.get('emotion_distribution', {})}
+"""
         
         prompt = f"""Analyze this podcast segment and provide insights:
 
-Text:
-{text}
+Text: {block['text'][:2000]}...
+Duration: {block.get('duration', 0):.1f} seconds
+Segments: {len(block.get('segments', []))} parts
+{emotion_context}
 
-Please provide:
-1. Main theme/topic
-2. Overall sentiment (positive/negative/neutral)
-3. Significance or takeaway
-
-Insights:"""
+Provide insights in this format:
+Theme: [main theme]
+Significance: [why this is important]
+Context: [relevant context or background]
+Emotional tone: [how emotion affects the content]
+"""
         
-        response = self._generate_with_ollama(prompt, system_prompt)
+        response = self._generate_with_ollama(prompt)
+        
+        insights = {
+            'theme': 'General discussion',
+            'significance': 'Part of broader conversation',
+            'context': 'Conversational segment',
+            'emotional_tone': emotion_analysis.get('dominant_emotion', 'neutral') if emotion_analysis else 'neutral'
+        }
         
         if response:
-            # Try to parse structured response
-            insights = self._parse_insights(response)
-        else:
-            # Fallback insights
-            insights = self._fallback_insights(block)
+            lines = response.split('\n')
+            for line in lines:
+                line = line.strip()
+                if line.lower().startswith('theme:'):
+                    insights['theme'] = re.sub(r'^.*?:', '', line).strip()
+                elif line.lower().startswith('significance:'):
+                    insights['significance'] = re.sub(r'^.*?:', '', line).strip()
+                elif line.lower().startswith('context:'):
+                    insights['context'] = re.sub(r'^.*?:', '', line).strip()
+                elif line.lower().startswith('emotional tone:'):
+                    insights['emotional_tone'] = re.sub(r'^.*?:', '', line).strip()
         
         return insights
     
@@ -302,30 +425,38 @@ Insights:"""
         return insights
     
     def _fallback_summarization(self, blocks: List[Dict]) -> List[Dict]:
-        """Fallback summarization when Ollama is not available"""
+        """Fallback summarization when Ollama is not available, with emotion analysis"""
         logger.info("Using fallback summarization methods")
         
         summarized_blocks = []
         
         for block in blocks:
+            # Analyze emotions even in fallback mode
+            emotion_analysis = self._analyze_block_emotions(block)
+            
             # Extractive summary
             summary = self._extractive_summary(block['text'])
             
             # Simple key points
             key_points = self._fallback_key_points(block['text'])
             
-            # Basic insights
+            # Basic insights with emotion
             insights = self._fallback_insights(block)
+            insights['emotional_tone'] = emotion_analysis.get('dominant_emotion', 'neutral')
             
             enhanced_block = block.copy()
             enhanced_block.update({
                 'summary': summary,
                 'key_points': key_points,
                 'insights': insights,
+                'emotion_analysis': emotion_analysis,
                 'summary_stats': {
                     'original_length': len(block['text']),
                     'summary_length': len(summary),
-                    'compression_ratio': len(summary) / len(block['text']) if block['text'] else 0
+                    'compression_ratio': len(summary) / len(block['text']) if block['text'] else 0,
+                    'segments_analyzed': len(block.get('segments', [])),
+                    'dominant_emotion': emotion_analysis.get('dominant_emotion', 'neutral'),
+                    'emotion_confidence': emotion_analysis.get('confidence', 0.0)
                 }
             })
             
@@ -452,7 +583,8 @@ Insights:"""
     def _generate_overall_with_llm(self, summaries: str, key_points: List[str]) -> Dict:
         """Generate overall summary using LLM"""
         system_prompt = """You are an expert at creating comprehensive podcast summaries.
-Create an engaging overview that captures the main themes and key takeaways."""
+Focus on the actual content, themes, and key insights discussed in the podcast.
+Do not mention technical details like duration, number of speakers, or file information."""
         
         prompt = f"""Create an overall summary for this podcast based on the segment summaries:
 
@@ -463,9 +595,11 @@ Key Points:
 {chr(10).join(f"- {point}" for point in key_points[:10])}
 
 Please provide:
-1. A 2-3 sentence overall summary
-2. Top 3 main themes
-3. Key takeaways
+1. A 2-3 sentence overall summary that captures what the podcast is actually about
+2. Top 3 main themes or topics discussed
+3. Key takeaways or insights shared
+
+Focus on the content and meaning, not technical aspects.
 
 Overall Summary:"""
         

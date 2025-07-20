@@ -1,0 +1,2 @@
+from config import VECTOR_STORE_DIR
+print(f"VECTOR_STORE_DIR: {VECTOR_STORE_DIR}")

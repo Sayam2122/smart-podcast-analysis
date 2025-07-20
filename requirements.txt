@@ -16,7 +16,7 @@ librosa>=0.9.0
 soundfile>=0.12.0
 
 # Vector database and embeddings
-chromadb>=0.4.0
+chromadb>=0.4.15
 numpy>=1.24.0
 
 # Data processing
@@ -42,6 +42,22 @@ textwrap3>=0.9.0
 # Visualization
 matplotlib>=3.5.0
 seaborn>=0.11.0
+# Visualization
+plotly>=5.17.0
+
+# Database
+sqlite3
+
+# Development and testing
+pytest>=7.4.0
+black>=23.9.0
+flake8>=6.0.0
+
+# RAG System specific dependencies
+sqlite3-utils>=3.35.0
+pathlib2>=2.3.7
+python-dotenv>=1.0.0
+pydantic>=2.0.0
 
 # Development dependencies (optional)
 pytest>=7.0.0

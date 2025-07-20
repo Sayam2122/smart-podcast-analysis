@@ -189,6 +189,9 @@ class PipelineRunner:
             temperature=self.config['summarization']['temperature']
         )
         
+        # Check if Ollama is available
+        self.ollama_available = getattr(self.summarizer, 'ollama_available', False)
+        
         logger.info("All pipeline components initialized")
     
     def _load_session_state(self) -> Dict:
@@ -563,19 +566,32 @@ class PipelineRunner:
         # Processing statistics
         processing_times = self.state.get('processing_times', {})
         
-        # Generate overall summary and highlights from summarizer
+        # Generate overall summary and highlights from summarizer with enhanced content focus
         overall_summary = "No summary available"
         key_highlights = []
         
         if results.get('summaries') and len(results['summaries']) > 0:
-            first_summary = results['summaries'][0]
-            if isinstance(first_summary, dict):
-                overall_summary = first_summary.get('summary', "No summary available")
-                key_highlights = first_summary.get('key_points', [])
-            elif isinstance(first_summary, str):
-                overall_summary = first_summary
-            else:
-                overall_summary = str(first_summary)
+            # Try to get overall summary from summarization results
+            for summary_item in results['summaries']:
+                if isinstance(summary_item, dict):
+                    if 'overall_summary' in summary_item:
+                        # Use the overall summary from the summarization module
+                        overall_data = summary_item['overall_summary']
+                        if isinstance(overall_data, dict):
+                            overall_summary = overall_data.get('summary', overall_summary)
+                            key_highlights = overall_data.get('key_takeaways', [])
+                        elif isinstance(overall_data, str):
+                            overall_summary = overall_data
+                        break
+                    elif 'summary' in summary_item:
+                        # Fallback to regular summary
+                        overall_summary = summary_item['summary']
+                        key_highlights = summary_item.get('key_points', [])
+                        break
+            
+            # If still no meaningful summary, use LLM to generate one
+            if overall_summary == "No summary available" and self.ollama_available:
+                overall_summary = self._generate_llm_overall_summary(results)
         
         # Generate global summary from all blocks
         global_summary = self._generate_global_summary(results)
@@ -802,54 +818,236 @@ class PipelineRunner:
     def _generate_global_summary(self, results: Dict) -> str:
         """Generate a comprehensive global summary from all content"""
         try:
-            # Collect all text from segments
-            all_text = []
-            for seg in results.get('enriched_segments', []):
-                if isinstance(seg, dict) and 'text' in seg:
-                    all_text.append(seg['text'])
+            # Use LLM to generate meaningful summary from the summarized blocks
+            if results.get('summaries') and self.ollama_available:
+                return self._generate_llm_global_summary(results)
             
-            if not all_text:
-                return "No content available for global summary"
-            
-            # Create a condensed overview
-            total_duration = results.get('audio_data', {}).get('duration', 0)
-            speakers = set(seg.get('speaker', 'Unknown') for seg in results.get('enriched_segments', []) if isinstance(seg, dict))
-            
-            summary_parts = [
-                f"This is a {total_duration/60:.1f}-minute audio content featuring {len(speakers)} speaker(s)."
-            ]
-            
-            # Add content themes from semantic blocks
+            # Fallback: extract main themes and content from semantic blocks
             if results.get('semantic_blocks'):
-                block_summaries = []
-                for block in results['semantic_blocks'][:3]:  # Top 3 blocks
-                    if isinstance(block, dict) and 'summary' in block:
-                        block_summaries.append(block['summary'])
+                main_topics = []
+                key_discussions = []
                 
-                if block_summaries:
-                    summary_parts.append("Main themes include: " + "; ".join(block_summaries))
+                for block in results['semantic_blocks'][:5]:  # Top 5 blocks
+                    if isinstance(block, dict):
+                        if 'summary' in block and block['summary'].strip():
+                            key_discussions.append(block['summary'].strip())
+                        if 'theme' in block and block['theme'].strip():
+                            main_topics.append(block['theme'].strip())
+                
+                if key_discussions:
+                    return " ".join(key_discussions[:3])  # First 3 meaningful discussions
+                elif main_topics:
+                    return f"The discussion covers topics including: {', '.join(main_topics[:3])}"
             
-            return " ".join(summary_parts)
+            # Final fallback: extract from enriched segments
+            meaningful_segments = []
+            for seg in results.get('enriched_segments', [])[:20]:  # First 20 segments
+                if isinstance(seg, dict) and 'text' in seg:
+                    text = seg['text'].strip()
+                    if len(text) > 50:  # Only meaningful segments
+                        meaningful_segments.append(text)
+            
+            if meaningful_segments:
+                combined_text = " ".join(meaningful_segments[:3])
+                return combined_text[:500] + "..." if len(combined_text) > 500 else combined_text
+            
+            return "No meaningful content available for global summary"
             
         except Exception as e:
             logger.warning(f"Error generating global summary: {e}")
             return "Global summary generation failed"
     
+    def _generate_llm_overall_summary(self, results: Dict) -> str:
+        """Generate overall summary using LLM when summarization module doesn't provide one"""
+        try:
+            # Collect key content from summaries and semantic blocks
+            content_pieces = []
+            
+            # From summaries
+            for summary_item in results.get('summaries', []):
+                if isinstance(summary_item, dict) and 'summary' in summary_item:
+                    content_pieces.append(summary_item['summary'])
+            
+            # From semantic blocks
+            for block in results.get('semantic_blocks', [])[:3]:
+                if isinstance(block, dict) and 'summary' in block:
+                    content_pieces.append(block['summary'])
+            
+            if not content_pieces:
+                return "No content available for overall summary"
+            
+            combined_content = " ".join(content_pieces)
+            
+            system_prompt = """You are an expert at creating concise podcast summaries.
+Create a 2-3 sentence overall summary that captures the main discussion topics and key insights."""
+            
+            prompt = f"""Based on this podcast content, create a brief overall summary:
+
+Content:
+{combined_content[:1500]}
+
+Focus on the main topics discussed and key insights shared. Do not mention technical details like duration or number of speakers.
+
+Overall Summary:"""
+            
+            response = self._generate_with_ollama(prompt, system_prompt)
+            
+            if response and response.strip():
+                return response.strip()
+            
+            return "Overall summary generation failed"
+            
+        except Exception as e:
+            logger.warning(f"Error generating LLM overall summary: {e}")
+            return "Overall summary generation failed"
+
+    def _generate_llm_global_summary(self, results: Dict) -> str:
+        """Generate global summary using LLM based on actual content"""
+        try:
+            # Collect all block summaries and key content
+            all_summaries = []
+            for summary_item in results.get('summaries', []):
+                if isinstance(summary_item, dict):
+                    if 'summary' in summary_item:
+                        all_summaries.append(summary_item['summary'])
+                    elif 'text' in summary_item:
+                        all_summaries.append(summary_item['text'])
+                elif isinstance(summary_item, str):
+                    all_summaries.append(summary_item)
+            
+            combined_content = " ".join(all_summaries)
+            
+            if not combined_content.strip():
+                return "No content available for global summary"
+            
+            # Generate LLM prompt for meaningful summary
+            system_prompt = """You are an expert at creating concise, meaningful summaries of podcast content.
+Focus on the actual topics, themes, and discussions, not technical details like duration or number of speakers."""
+            
+            prompt = f"""Based on the following podcast content, create a brief 2-3 sentence summary that captures the main topics and key discussions:
+
+Content:
+{combined_content[:2000]}
+
+Create a summary that focuses on:
+- What topics are discussed
+- Main themes and ideas
+- Key points or insights shared
+
+Summary:"""
+            
+            response = self._generate_with_ollama(prompt, system_prompt)
+            
+            if response and response.strip():
+                # Clean and return the response
+                cleaned_response = response.strip()
+                # Remove any metadata-like content
+                lines = [line.strip() for line in cleaned_response.split('\n') if line.strip()]
+                meaningful_lines = []
+                for line in lines:
+                    # Skip lines that mention technical details
+                    if not any(skip_word in line.lower() for skip_word in ['minute', 'speaker', 'duration', 'audio', 'file']):
+                        meaningful_lines.append(line)
+                
+                return " ".join(meaningful_lines) if meaningful_lines else cleaned_response
+            
+            return "Global summary generation failed"
+            
+        except Exception as e:
+            logger.warning(f"Error generating LLM global summary: {e}")
+            return "Global summary generation failed"
+    
+    def _generate_with_ollama(self, prompt: str, system_prompt: str = "") -> str:
+        """Generate text using Ollama"""
+        try:
+            import requests
+            
+            data = {
+                "model": "llama3.2:3b",
+                "prompt": f"{system_prompt}\n\n{prompt}" if system_prompt else prompt,
+                "stream": False,
+                "options": {
+                    "temperature": 0.7,
+                    "top_p": 0.9,
+                    "max_tokens": 500
+                }
+            }
+            
+            response = requests.post("http://localhost:11434/api/generate", json=data)
+            
+            if response.status_code == 200:
+                return response.json().get('response', '')
+            else:
+                logger.warning(f"Ollama request failed: {response.status_code}")
+                return ""
+                
+        except Exception as e:
+            logger.warning(f"Error calling Ollama: {e}")
+            return ""
+
     def _extract_global_highlights(self, results: Dict) -> List[str]:
         """Extract key highlights from the entire content"""
         highlights = []
         
         try:
-            # Speaker highlights
-            speakers = set(seg.get('speaker', 'Unknown') for seg in results.get('enriched_segments', []) if isinstance(seg, dict))
-            if len(speakers) > 1:
-                highlights.append(f"Multi-speaker conversation with {len(speakers)} participants")
+            # Extract key points from summaries
+            for summary_item in results.get('summaries', []):
+                if isinstance(summary_item, dict):
+                    key_points = summary_item.get('key_points', [])
+                    if isinstance(key_points, list):
+                        highlights.extend(key_points[:3])  # Top 3 from each summary
+                    elif isinstance(key_points, str):
+                        highlights.append(key_points)
             
-            # Emotion highlights
+            # Extract themes from semantic blocks
+            themes_added = set()
+            for block in results.get('semantic_blocks', [])[:5]:
+                if isinstance(block, dict):
+                    theme = block.get('theme', '').strip()
+                    if theme and theme not in themes_added and len(theme) > 10:
+                        highlights.append(f"Discussion about {theme.lower()}")
+                        themes_added.add(theme)
+                    
+                    # Extract key insights from block summaries
+                    summary = block.get('summary', '').strip()
+                    if summary and len(summary) > 30:
+                        # Extract meaningful sentences
+                        sentences = [s.strip() for s in summary.split('.') if len(s.strip()) > 20]
+                        if sentences:
+                            highlights.append(sentences[0] + '.')
+            
+            # Deduplicate and limit highlights
+            unique_highlights = []
+            seen = set()
+            for highlight in highlights:
+                highlight_lower = highlight.lower()
+                if highlight_lower not in seen and len(highlight) > 15:
+                    unique_highlights.append(highlight)
+                    seen.add(highlight_lower)
+                
+                if len(unique_highlights) >= 5:  # Limit to 5 highlights
+                    break
+            
+            return unique_highlights
+            
+        except Exception as e:
+            logger.warning(f"Error extracting global highlights: {e}")
+            return []
+
+    def _extract_key_insights(self, results: Dict) -> List[str]:
+        """Extract key insights from analysis results focusing on content"""
+        insights = []
+        
+        try:
+            # Extract meaningful insights from content, not just technical stats
+            total_blocks = len(results.get('semantic_blocks', []))
+            if total_blocks > 0:
+                insights.append(f"Content organized into {total_blocks} thematic discussion blocks")
+            
+            # Dominant emotion insight
             all_emotions = []
             for seg in results.get('emotion_analysis', []):
                 if isinstance(seg, dict):
-                    # Handle different emotion data structures
                     if 'text_emotion' in seg and isinstance(seg['text_emotion'], dict):
                         emotion = seg['text_emotion'].get('emotion')
                         if emotion:
@@ -861,30 +1059,27 @@ class PipelineRunner:
                             if emotion:
                                 all_emotions.append(emotion)
             
-            emotion_counts = {}
-            for emotion in all_emotions:
-                emotion_counts[emotion] = emotion_counts.get(emotion, 0) + 1
+            if all_emotions:
+                emotion_counts = {}
+                for emotion in all_emotions:
+                    emotion_counts[emotion] = emotion_counts.get(emotion, 0) + 1
+                
+                if emotion_counts:
+                    top_emotion = max(emotion_counts, key=emotion_counts.get)
+                    insights.append(f"Dominant emotion: {top_emotion}")
             
-            if emotion_counts:
-                top_emotion = max(emotion_counts, key=emotion_counts.get)
-                highlights.append(f"Predominant emotional tone: {top_emotion}")
+            # Content depth insight
+            if results.get('semantic_blocks'):
+                avg_duration = sum(block.get('duration', 0) for block in results['semantic_blocks'] 
+                                 if isinstance(block, dict)) / len(results['semantic_blocks'])
+                if avg_duration > 0:
+                    insights.append(f"Average topic duration: {avg_duration:.1f} seconds")
             
-            # Content highlights from summaries
-            if results.get('summaries'):
-                for summary in results['summaries'][:2]:  # Top 2 summaries
-                    if isinstance(summary, dict) and 'key_points' in summary:
-                        highlights.extend(summary['key_points'][:2])  # Top 2 points each
-            
-            # Duration highlight
-            duration = results.get('audio_data', {}).get('duration', 0)
-            if duration > 0:
-                highlights.append(f"Total duration: {duration/60:.1f} minutes")
-            
-            return highlights[:5]  # Return top 5 highlights
+            return insights[:3]  # Return top 3 insights
             
         except Exception as e:
-            logger.warning(f"Error extracting global highlights: {e}")
-            return ["Highlights extraction failed"]
+            logger.warning(f"Error extracting key insights: {e}")
+            return []
 
 
 def process_podcast(audio_file_path: str,
